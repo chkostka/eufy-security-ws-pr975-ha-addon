@@ -3,6 +3,9 @@ name: Build PR975 15s Test
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,8 +16,6 @@ jobs:
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -23,6 +24,56 @@ jobs:
         run: |
           chmod +x scripts/rebuild.sh
           ./scripts/rebuild.sh
+
+      - name: Copy built add-on into repository
+        run: |
+          BUILD_DIR="$(find artifacts -maxdepth 1 -type d -name 'rebuild-*' | sort | tail -n 1)"
+
+          if [ -z "$BUILD_DIR" ]; then
+            echo "ERROR: Build directory not found"
+            exit 1
+          fi
+
+          SOURCE_DIR="$BUILD_DIR/eufy-security-ws-pr975"
+
+          if [ ! -d "$SOURCE_DIR" ]; then
+            echo "ERROR: Built add-on directory not found"
+            exit 1
+          fi
+
+          echo "Using build directory: $BUILD_DIR"
+
+          rm -rf eufy-security-ws-pr975/app
+          cp -R "$SOURCE_DIR/app" eufy-security-ws-pr975/app
+
+          cp "$SOURCE_DIR/Dockerfile" eufy-security-ws-pr975/Dockerfile
+          cp "$SOURCE_DIR/build.yaml" eufy-security-ws-pr975/build.yaml
+          cp "$SOURCE_DIR/config.yaml" eufy-security-ws-pr975/config.yaml
+          cp "$SOURCE_DIR/run.sh" eufy-security-ws-pr975/run.sh
+          cp "$SOURCE_DIR/apparmor.txt" eufy-security-ws-pr975/apparmor.txt
+          cp "$SOURCE_DIR/DOCS.md" eufy-security-ws-pr975/DOCS.md
+          cp "$SOURCE_DIR/icon.png" eufy-security-ws-pr975/icon.png
+          cp "$SOURCE_DIR/logo.png" eufy-security-ws-pr975/logo.png
+
+      - name: Verify 15 second build
+        run: |
+          grep -R "MAX_STREAM_DATA_WAIT" .work/eufy-security-client/src/p2p/session.ts
+          grep -F "private readonly MAX_STREAM_DATA_WAIT = 15 * 1000;" \
+            .work/eufy-security-client/src/p2p/session.ts
+
+      - name: Commit built add-on
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add eufy-security-ws-pr975
+
+          if git diff --cached --quiet; then
+            echo "No repository changes to commit."
+          else
+            git commit -m "Publish PR975 15s test build"
+            git push
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
