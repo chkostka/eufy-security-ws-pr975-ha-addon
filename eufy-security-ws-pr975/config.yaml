@@ -1,8 +1,8 @@
-name: eufy-security-ws PR975 Test
-description: Fix for Eufy "No devices found" and API code 200 using eufy-security-client PR 975
-version: 3.1.0-pr975.1
-slug: "eufy_security_ws_pr975"
-url: https://github.com/jackpott-tech/eufy-security-ws-pr975-ha-addon
+name: eufy-security-ws PR975 15s Test
+description: PR975 test version with 15 second P2P stream startup timeout
+version: 3.1.0-pr975.15s.1
+slug: "eufy_security_ws_pr975_15s"
+url: https://github.com/chkostka/eufy-security-ws-pr975-ha-addon
 init: false
 arch:
   - aarch64
