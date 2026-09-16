@@ -1,6 +1,6 @@
 diff --git a/src/p2p/session.ts b/src/p2p/session.ts
 --- a/src/p2p/session.ts
 +++ b/src/p2p/session.ts
-@@ -139,1 +139,1 @@
+@@
 -  private readonly MAX_STREAM_DATA_WAIT = 5 * 1000;
 +  private readonly MAX_STREAM_DATA_WAIT = 15 * 1000;
