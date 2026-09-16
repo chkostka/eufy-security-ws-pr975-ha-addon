@@ -1,145 +1,160 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-PROJECT_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUTPUT_DIR="${1:-${PROJECT_ROOT}/artifacts/rebuild-${STAMP}}"
-WORK_DIR="$(mktemp -d -p "${PROJECT_ROOT}" .rebuild-work.XXXXXX)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK_ROOT="${PROJECT_ROOT}/.work"
+ARTIFACT_ROOT="${PROJECT_ROOT}/artifacts"
 
 CLIENT_REPO="https://github.com/bropat/eufy-security-client.git"
 CLIENT_TAG="4.1.0"
 CLIENT_COMMIT="10155f572a0f261acb207c76edc17e2cae78de90"
 CLIENT_VERSION="4.1.0-pr975.1"
-PR_PATCH_SHA256="2b7dd562d4186823f74eac46869f1ed7dfb6c09e2a7559c31866be3fbef09709"
 
 WS_REPO="https://github.com/bropat/eufy-security-ws.git"
 WS_TAG="3.1.0"
-WS_COMMIT="e4709320f4e01e976ee65d53e763b6a656f0137d"
+WS_COMMIT="6b93786e142e2b925012c83c20e4c575c1afc92a"
 WS_VERSION="3.1.0-pr975.1"
 
-NODE_IMAGE="node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf"
-AMD64_BASE="ghcr.io/home-assistant/amd64-base:3.23@sha256:322c4492f25f9c2ca04b0789101a44350c516f4d3cd928fca14847ef19668ede"
-AARCH64_BASE="ghcr.io/home-assistant/aarch64-base:3.23@sha256:e81d9f268833456f9803da051fa95fd8fa4e1fad1f911dec1a489a18701a76f5"
+PR_PATCH_SHA256="ad2c8e6293a89c7555108c2c1718a51f91796d10b1bbd206dba00df6a84a5b69"
 
-IMAGE_TAG="local/eufy-security-ws-pr975:${WS_VERSION}"
-LOCAL_UID="$(id -u)"
-LOCAL_GID="$(id -g)"
+CLIENT_DIR="${WORK_ROOT}/eufy-security-client"
+WS_DIR="${WORK_ROOT}/eufy-security-ws"
+ADDON_DIR="${WORK_ROOT}/eufy-security-ws-pr975"
+BUILD_DATE="$(date -u +%Y%m%dT%H%M%SZ)"
+OUTPUT_DIR="${ARTIFACT_ROOT}/rebuild-${BUILD_DATE}"
 
-if [[ -e "${OUTPUT_DIR}" ]]; then
-  echo "Refusing to overwrite existing output: ${OUTPUT_DIR}" >&2
+rm -rf "${WORK_ROOT}"
+mkdir -p "${WORK_ROOT}" "${OUTPUT_DIR}"
+
+echo "==> Clone eufy-security-client ${CLIENT_TAG}"
+git clone --depth 1 --branch "${CLIENT_TAG}" "${CLIENT_REPO}" "${CLIENT_DIR}"
+
+ACTUAL_CLIENT_COMMIT="$(git -C "${CLIENT_DIR}" rev-parse HEAD)"
+if [[ "${ACTUAL_CLIENT_COMMIT}" != "${CLIENT_COMMIT}" ]]; then
+  echo "Unexpected eufy-security-client commit:"
+  echo "Expected: ${CLIENT_COMMIT}"
+  echo "Actual:   ${ACTUAL_CLIENT_COMMIT}"
   exit 1
 fi
 
-mkdir -p "${OUTPUT_DIR}"
+echo "==> Verify PR975 patch"
+echo "${PR_PATCH_SHA256}  ${PROJECT_ROOT}/patches/pr-975.patch" | sha256sum -c -
 
-node_run() {
-  local work_path="$1"
-  shift
-  docker run --rm \
-    --user "${LOCAL_UID}:${LOCAL_GID}" \
-    --env NPM_CONFIG_CACHE=/tmp/npm-cache \
-    --volume "${work_path}:/work" \
-    --workdir /work \
-    "${NODE_IMAGE}" "$@"
-}
-
-CLIENT_DIR="${WORK_DIR}/eufy-security-client"
-WS_DIR="${WORK_DIR}/eufy-security-ws"
-ADDON_DIR="${OUTPUT_DIR}/eufy-security-ws-pr975"
-
-git clone --depth 1 --branch "${CLIENT_TAG}" "${CLIENT_REPO}" "${CLIENT_DIR}"
-test "$(git -C "${CLIENT_DIR}" rev-parse HEAD)" = "${CLIENT_COMMIT}"
-
-echo "${PR_PATCH_SHA256}  ${PROJECT_ROOT}/patches/pr-975.patch" | sha256sum --check --status
-
+echo "==> Apply PR975 patch"
 git -C "${CLIENT_DIR}" apply --check "${PROJECT_ROOT}/patches/pr-975.patch"
 git -C "${CLIENT_DIR}" apply "${PROJECT_ROOT}/patches/pr-975.patch"
 
-git -C "${CLIENT_DIR}" apply --check "${PROJECT_ROOT}/patches/stream-timeout-15s.patch"
-git -C "${CLIENT_DIR}" apply "${PROJECT_ROOT}/patches/stream-timeout-15s.patch"
+echo "==> Change P2P stream startup timeout from 5 seconds to 15 seconds"
+grep -Fq \
+  'private readonly MAX_STREAM_DATA_WAIT = 5 * 1000;' \
+  "${CLIENT_DIR}/src/p2p/session.ts"
 
-node_run "${CLIENT_DIR}" npm pkg set \
-  "version=${CLIENT_VERSION}" \
-  "devDependencies.copyfiles=2.4.1"
+sed -i \
+  's/private readonly MAX_STREAM_DATA_WAIT = 5 \* 1000;/private readonly MAX_STREAM_DATA_WAIT = 15 * 1000;/' \
+  "${CLIENT_DIR}/src/p2p/session.ts"
 
-node_run "${CLIENT_DIR}" npm install --package-lock-only --ignore-scripts
-node_run "${CLIENT_DIR}" npm ci
-node_run "${CLIENT_DIR}" npm run build
+grep -Fq \
+  'private readonly MAX_STREAM_DATA_WAIT = 15 * 1000;' \
+  "${CLIENT_DIR}/src/p2p/session.ts"
 
-mkdir -p "${OUTPUT_DIR}/packages"
+echo "==> Build eufy-security-client"
+docker run --rm \
+  -v "${CLIENT_DIR}:/workspace" \
+  -w /workspace \
+  node:24-alpine \
+  sh -c "
+    set -e
+    npm ci
+    npm version '${CLIENT_VERSION}' --no-git-tag-version
+    npm run build
+    npm test
+    npm pack
+  "
 
-node_run "${CLIENT_DIR}" npm pack --ignore-scripts --pack-destination /work
-mv "${CLIENT_DIR}/eufy-security-client-${CLIENT_VERSION}.tgz" "${OUTPUT_DIR}/packages/"
+CLIENT_TGZ="$(find "${CLIENT_DIR}" -maxdepth 1 -name 'eufy-security-client-*.tgz' -print -quit)"
+if [[ -z "${CLIENT_TGZ}" ]]; then
+  echo "Client package was not created"
+  exit 1
+fi
 
-node_run "${CLIENT_DIR}" npm test -- --runInBand
-
+echo "==> Clone eufy-security-ws ${WS_TAG}"
 git clone --depth 1 --branch "${WS_TAG}" "${WS_REPO}" "${WS_DIR}"
-test "$(git -C "${WS_DIR}" rev-parse HEAD)" = "${WS_COMMIT}"
+
+ACTUAL_WS_COMMIT="$(git -C "${WS_DIR}" rev-parse HEAD)"
+if [[ "${ACTUAL_WS_COMMIT}" != "${WS_COMMIT}" ]]; then
+  echo "Unexpected eufy-security-ws commit:"
+  echo "Expected: ${WS_COMMIT}"
+  echo "Actual:   ${ACTUAL_WS_COMMIT}"
+  exit 1
+fi
 
 mkdir -p "${WS_DIR}/vendor"
-cp "${OUTPUT_DIR}/packages/eufy-security-client-${CLIENT_VERSION}.tgz" "${WS_DIR}/vendor/"
+cp "${CLIENT_TGZ}" "${WS_DIR}/vendor/eufy-security-client.tgz"
 
-node_run "${WS_DIR}" npm pkg set \
-  "version=${WS_VERSION}" \
-  "dependencies.eufy-security-client=file:vendor/eufy-security-client-${CLIENT_VERSION}.tgz"
+echo "==> Build eufy-security-ws"
+docker run --rm \
+  -v "${WS_DIR}:/workspace" \
+  -w /workspace \
+  node:24-alpine \
+  sh -c "
+    set -e
+    npm ci
+    npm install --save-exact ./vendor/eufy-security-client.tgz
+    npm version '${WS_VERSION}' --no-git-tag-version
+    npm run build
+    npm test
+  "
 
-node_run "${WS_DIR}" npm install --package-lock-only --ignore-scripts
-node_run "${WS_DIR}" npm ci
-node_run "${WS_DIR}" npm run build
-node_run "${WS_DIR}" npm test -- --runInBand
-
+echo "==> Prepare Home Assistant add-on"
 mkdir -p "${ADDON_DIR}/app/vendor"
-
-for file in Dockerfile config.yaml build.yaml run.sh apparmor.txt DOCS.md icon.png logo.png; do
-  cp "${PROJECT_ROOT}/eufy-security-ws-pr975/${file}" "${ADDON_DIR}/${file}"
-done
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/Dockerfile" "${ADDON_DIR}/Dockerfile"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/config.yaml" "${ADDON_DIR}/config.yaml"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/build.yaml" "${ADDON_DIR}/build.yaml"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/run.sh" "${ADDON_DIR}/run.sh"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/apparmor.txt" "${ADDON_DIR}/apparmor.txt"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/DOCS.md" "${ADDON_DIR}/DOCS.md"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/icon.png" "${ADDON_DIR}/icon.png"
+cp "${PROJECT_ROOT}/eufy-security-ws-pr975/logo.png" "${ADDON_DIR}/logo.png"
 
 cp "${WS_DIR}/package.json" "${ADDON_DIR}/app/package.json"
 cp "${WS_DIR}/package-lock.json" "${ADDON_DIR}/app/package-lock.json"
-cp -a "${WS_DIR}/dist" "${ADDON_DIR}/app/dist"
-cp "${WS_DIR}/vendor/eufy-security-client-${CLIENT_VERSION}.tgz" "${ADDON_DIR}/app/vendor/"
+cp -R "${WS_DIR}/dist" "${ADDON_DIR}/app/dist"
+cp "${CLIENT_TGZ}" "${ADDON_DIR}/app/vendor/eufy-security-client.tgz"
 
-case "$(uname -m)" in
-  x86_64)
-    BUILD_FROM="${AMD64_BASE}"
-    ;;
-  aarch64|arm64)
-    BUILD_FROM="${AARCH64_BASE}"
-    ;;
-  *)
-    echo "Unsupported local image-build architecture: $(uname -m)" >&2
-    exit 1
-    ;;
-esac
+echo "==> Build Home Assistant add-on images"
 
-docker build \
-  --build-arg "BUILD_FROM=${BUILD_FROM}" \
-  --tag "${IMAGE_TAG}" \
-  "${ADDON_DIR}"
+for ARCH in amd64 aarch64; do
+  if [[ "${ARCH}" == "amd64" ]]; then
+    BUILD_FROM="ghcr.io/home-assistant/amd64-base:3.23"
+  else
+    BUILD_FROM="ghcr.io/home-assistant/aarch64-base:3.23"
+  fi
 
-docker run --rm --network none \
-  --entrypoint /usr/bin/node \
-  "${IMAGE_TAG}" \
-  -e "const a=require('/usr/src/app/node_modules/eufy-security-client/build/http/api.js'); if(!a.isSuccessfulResponseCode(0)||!a.isSuccessfulResponseCode(200)||a.isSuccessfulResponseCode(500)) process.exit(1);"
+  IMAGE="local/eufy-security-ws-pr975:${WS_VERSION}-${ARCH}"
 
-docker run --rm --network none \
-  --entrypoint /usr/bin/node \
-  "${IMAGE_TAG}" \
-  /usr/src/app/node_modules/eufy-security-ws/dist/bin/server.js --help
+  docker build \
+    --build-arg BUILD_FROM="${BUILD_FROM}" \
+    -t "${IMAGE}" \
+    "${ADDON_DIR}"
+
+  echo "==> Smoke test ${ARCH}"
+  docker run --rm \
+    --entrypoint node \
+    "${IMAGE}" \
+    -e "
+      const pkg = require('/usr/src/app/node_modules/eufy-security-ws/package.json');
+      console.log(pkg.name, pkg.version);
+    "
+done
+
+echo "==> Create artifacts"
+cp -R "${ADDON_DIR}" "${OUTPUT_DIR}/eufy-security-ws-pr975"
 
 tar -C "${OUTPUT_DIR}" \
-  -czf "${OUTPUT_DIR}/eufy-security-ws-pr975-ha-addon.tar.gz" \
+  -czf "${OUTPUT_DIR}/eufy-security-ws-pr975-${WS_VERSION}.tar.gz" \
   eufy-security-ws-pr975
 
-(
-  cd "${OUTPUT_DIR}"
-  sha256sum \
-    "packages/eufy-security-client-${CLIENT_VERSION}.tgz" \
-    "eufy-security-ws-pr975-ha-addon.tar.gz" \
-    > SHA256SUMS
-)
-
-echo "Build completed."
-echo "Preserved work directory: ${WORK_DIR}"
-echo "Artifacts: ${OUTPUT_DIR}"
+echo
+echo "Build completed successfully."
+echo "Artifacts:"
+echo "${OUTPUT_DIR}"
