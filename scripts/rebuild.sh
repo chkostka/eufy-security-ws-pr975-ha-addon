@@ -140,7 +140,10 @@ for ARCH in amd64 aarch64; do
 
   IMAGE="local/eufy-security-ws-pr975:${WS_VERSION}-${ARCH}"
 
+  echo "==> Build ${ARCH}"
+
   docker build \
+    --platform "linux/${ARCH}" \
     --build-arg BUILD_FROM="${BUILD_FROM}" \
     -t "${IMAGE}" \
     "${ADDON_DIR}"
@@ -148,6 +151,7 @@ for ARCH in amd64 aarch64; do
   echo "==> Smoke test ${ARCH}"
 
   docker run --rm \
+    --platform "linux/${ARCH}" \
     --entrypoint node \
     "${IMAGE}" \
     -e "
