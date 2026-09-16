@@ -15,7 +15,7 @@ WS_TAG="3.1.0"
 WS_COMMIT="6b93786e142e2b925012c83c20e4c575c1afc92a"
 WS_VERSION="3.1.0-pr975.1"
 
-PR_PATCH_SHA256="6a9dd81385ff38293ec88b2092380d83f417572da08763a12656b5d429fbfd5b"
+PR_PATCH_SHA256="2b7dd562d4186823f74eac46869f1ed7dfb6c09e2a7559c31866be3fbef09709"
 
 CLIENT_DIR="${WORK_ROOT}/eufy-security-client"
 WS_DIR="${WORK_ROOT}/eufy-security-ws"
@@ -45,6 +45,7 @@ git -C "${CLIENT_DIR}" apply --check "${PROJECT_ROOT}/patches/pr-975.patch"
 git -C "${CLIENT_DIR}" apply "${PROJECT_ROOT}/patches/pr-975.patch"
 
 echo "==> Change P2P stream startup timeout from 5 seconds to 15 seconds"
+
 grep -Fq \
   'private readonly MAX_STREAM_DATA_WAIT = 5 * 1000;' \
   "${CLIENT_DIR}/src/p2p/session.ts"
@@ -58,6 +59,7 @@ grep -Fq \
   "${CLIENT_DIR}/src/p2p/session.ts"
 
 echo "==> Build eufy-security-client"
+
 docker run --rm \
   -v "${CLIENT_DIR}:/workspace" \
   -w /workspace \
@@ -72,15 +74,18 @@ docker run --rm \
   "
 
 CLIENT_TGZ="$(find "${CLIENT_DIR}" -maxdepth 1 -name 'eufy-security-client-*.tgz' -print -quit)"
+
 if [[ -z "${CLIENT_TGZ}" ]]; then
   echo "Client package was not created"
   exit 1
 fi
 
 echo "==> Clone eufy-security-ws ${WS_TAG}"
+
 git clone --depth 1 --branch "${WS_TAG}" "${WS_REPO}" "${WS_DIR}"
 
 ACTUAL_WS_COMMIT="$(git -C "${WS_DIR}" rev-parse HEAD)"
+
 if [[ "${ACTUAL_WS_COMMIT}" != "${WS_COMMIT}" ]]; then
   echo "Unexpected eufy-security-ws commit:"
   echo "Expected: ${WS_COMMIT}"
@@ -92,6 +97,7 @@ mkdir -p "${WS_DIR}/vendor"
 cp "${CLIENT_TGZ}" "${WS_DIR}/vendor/eufy-security-client.tgz"
 
 echo "==> Build eufy-security-ws"
+
 docker run --rm \
   -v "${WS_DIR}:/workspace" \
   -w /workspace \
@@ -106,7 +112,9 @@ docker run --rm \
   "
 
 echo "==> Prepare Home Assistant add-on"
+
 mkdir -p "${ADDON_DIR}/app/vendor"
+
 cp "${PROJECT_ROOT}/eufy-security-ws-pr975/Dockerfile" "${ADDON_DIR}/Dockerfile"
 cp "${PROJECT_ROOT}/eufy-security-ws-pr975/config.yaml" "${ADDON_DIR}/config.yaml"
 cp "${PROJECT_ROOT}/eufy-security-ws-pr975/build.yaml" "${ADDON_DIR}/build.yaml"
@@ -138,6 +146,7 @@ for ARCH in amd64 aarch64; do
     "${ADDON_DIR}"
 
   echo "==> Smoke test ${ARCH}"
+
   docker run --rm \
     --entrypoint node \
     "${IMAGE}" \
@@ -148,6 +157,7 @@ for ARCH in amd64 aarch64; do
 done
 
 echo "==> Create artifacts"
+
 cp -R "${ADDON_DIR}" "${OUTPUT_DIR}/eufy-security-ws-pr975"
 
 tar -C "${OUTPUT_DIR}" \
