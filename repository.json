@@ -1,5 +1,5 @@
 {
-  "name": "Eufy no-devices-found fix for Home Assistant",
-  "url": "https://github.com/jackpott-tech/eufy-security-ws-pr975-ha-addon",
-  "maintainer": "jackpott-tech"
+  "name": "Eufy Security WS PR975 15s Test",
+  "url": "https://github.com/chkostka/eufy-security-ws-pr975-ha-addon",
+  "maintainer": "chkostka"
 }
